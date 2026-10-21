@@ -23,6 +23,12 @@
 #include "../dispatch.h"
 #include "../waveSynth.h"
 #include "../../fixedQueue.h"
+
+// size of sample memory in extended sample memory mode (not hardware-accurate).
+// must be a power of two larger than 65536.
+#define SNES_EXT_MEM_SIZE (16*1024*1024)
+// in extended mode, sample data starts here (the first 64K holds state, pointers, wave RAM and echo)
+#define SNES_EXT_SAMPLE_START 0x10000
 #include "sound/snes/SPC_DSP.h"
 
 class DivPlatformSNES: public DivDispatch {
@@ -71,6 +77,9 @@ class DivPlatformSNES: public DivDispatch {
   bool echoOn;
   bool interpolationOff;
   bool antiClick;
+  // extended sample memory mode (not hardware-accurate)
+  bool extendedMem;
+  size_t dirEntrySize;
 
   bool initEchoOn;
   signed char initEchoVolL;
@@ -147,6 +156,9 @@ class DivPlatformSNES: public DivDispatch {
     void writeOutVol(int ch);
     void writeEnv(int ch);
     void initEcho();
+    size_t getMemUsed();
 };
+
+static_assert((SNES_EXT_MEM_SIZE&(SNES_EXT_MEM_SIZE-1))==0 && SNES_EXT_MEM_SIZE>65536,"SNES_EXT_MEM_SIZE must be a power of two larger than 65536");
 
 #endif

@@ -29,8 +29,8 @@
 #define chWrite(c,a,v) {rWrite((a)+(c)*16,v)}
 #define rWriteDelay(a,v,d) if (!skipRegisterWrites) {writes.push(QueuedWrite(a,v,d)); if (dumpWrites) {addWrite(a,v);} }
 #define chWriteDelay(c,a,v,d) {rWrite((a)+(c)*16,v,d)}
-#define sampleTableAddr(c) (sampleTableBase+(c)*4)
-#define waveTableAddr(c) (sampleTableBase+8*4+(c)*9*16)
+#define sampleTableAddr(c) (sampleTableBase+(c)*dirEntrySize)
+#define waveTableAddr(c) (sampleTableBase+8*dirEntrySize+(c)*9*16)
 
 const char* regCheatSheetSNESDSP[]={
   "VxVOLL", "x0",
@@ -239,10 +239,18 @@ void DivPlatformSNES::tick(bool sysTick) {
           end=0;
           loop=0;
         }
-        sampleMem[tabAddr+0]=start&0xff;
-        sampleMem[tabAddr+1]=start>>8;
-        sampleMem[tabAddr+2]=loop&0xff;
-        sampleMem[tabAddr+3]=loop>>8;
+        if (extendedMem) {
+          // 32-bit pointers (extended sample memory mode only)
+          for (int j=0; j<4; j++) {
+            sampleMem[tabAddr+j]=(start>>(j*8))&0xff;
+            sampleMem[tabAddr+4+j]=(loop>>(j*8))&0xff;
+          }
+        } else {
+          sampleMem[tabAddr+0]=start&0xff;
+          sampleMem[tabAddr+1]=start>>8;
+          sampleMem[tabAddr+2]=loop&0xff;
+          sampleMem[tabAddr+3]=loop>>8;
+        }
         kon|=(1<<i);
         koff|=(1<<i);
         chan[i].keyOn=false;
@@ -805,7 +813,7 @@ DivSamplePos DivPlatformSNES::getSamplePos(int ch) {
   if (chan[ch].sample<0 || chan[ch].sample>=parent->song.sampleLen) return DivSamplePos();
   const SPC_DSP::voice_t* v=dsp.get_voice(ch);
   // TODO: fix?
-  if (sampleMem[v->brr_addr&0xffff]==0) return DivSamplePos();
+  if (sampleMem[v->brr_addr&(sampleMemSize-1)]==0) return DivSamplePos();
   return DivSamplePos(
     chan[ch].sample,
     ((v->brr_addr-sampleOff[chan[ch].sample])*16/9)+v->brr_offset,
@@ -857,7 +865,13 @@ void DivPlatformSNES::initEcho() {
       i.begin=(0xf800-echoDelay*2048);
     }
   }
-  memCompo.used=sampleMemLen+echoDelay*2048;
+  memCompo.used=getMemUsed();
+}
+
+size_t DivPlatformSNES::getMemUsed() {
+  // in extended mode the echo buffer lives in the reserved first 64K, which sampleMemLen already covers
+  if (extendedMem) return sampleMemLen;
+  return sampleMemLen+echoDelay*2048;
 }
 
 void DivPlatformSNES::reset() {
@@ -865,6 +879,7 @@ void DivPlatformSNES::reset() {
 
   memcpy(sampleMem,copyOfSampleMem,sampleMemSize);
   dsp.init(sampleMem);
+  dsp.set_extended(sampleMemSize);
   dsp.set_output(NULL,0);
   dsp.setupInterpolation(!interpolationOff);
 
@@ -979,7 +994,9 @@ const void* DivPlatformSNES::getSampleMem(int index) {
 }
 
 size_t DivPlatformSNES::getSampleMemCapacity(int index) {
-  return index == 0 ? (0xf800-echoDelay*2048) : 0;
+  if (index!=0) return 0;
+  if (extendedMem) return sampleMemSize;
+  return 0xf800-echoDelay*2048;
 }
 
 size_t DivPlatformSNES::getSampleMemUsage(int index) {
@@ -1002,6 +1019,12 @@ const DivMemoryComposition* DivPlatformSNES::getMemCompo(int index) {
 }
 
 const void* DivPlatformSNES::compileSampleMem(int index, size_t& size) {
+  if (extendedMem) {
+    // extended sample memory is not valid SNES data
+    logE("SNES: can't compile sample memory in extended sample memory mode (not valid SNES data)");
+    size=0;
+    return NULL;
+  }
   size=MIN(sampleMemLen,65536)-sampleTableBase;
   unsigned char* ret=new unsigned char[size];
   memcpy(ret,&copyOfSampleMem[sampleTableBase],size);
@@ -1018,11 +1041,11 @@ void DivPlatformSNES::renderSamples(int sysID) {
   memCompo.name="SPC/DSP Memory";
 
   memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_RESERVED,"State",-1,0,sampleTableBase));
-  memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_RESERVED,"Channel Sample Pointers",-1,sampleTableBase,sampleTableBase+8*4));
-  memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_WAVE_RAM,"Wave RAM",-1,sampleTableBase+8*4,sampleTableBase+8*4+8*9*16));
+  memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_RESERVED,"Channel Sample Pointers",-1,sampleTableBase,sampleTableBase+8*dirEntrySize));
+  memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_WAVE_RAM,"Wave RAM",-1,sampleTableBase+8*dirEntrySize,sampleTableBase+8*dirEntrySize+8*9*16));
 
   // skip past sample table and wavetable buffer
-  size_t memPos=sampleTableBase+8*4+8*9*16;
+  size_t memPos=sampleTableBase+8*dirEntrySize+8*9*16;
   size_t sampleTablePos=memPos;
   
   // allocate sample table
@@ -1034,8 +1057,15 @@ void DivPlatformSNES::renderSamples(int sysID) {
     }
     maxSample=i;
   }
-  memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_RESERVED,"Sample Directory",-1,memPos,memPos+(maxSample+1)*4));
-  memPos+=(maxSample+1)*4;
+  if (extendedMem) {
+    // extended mode: the sample directory is only needed for exporting compiled memory, which isn't possible.
+    // samples go after the first 64K, so the echo buffer never overlaps them.
+    memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_RESERVED,"Reserved (echo area)",-1,memPos,SNES_EXT_SAMPLE_START));
+    memPos=SNES_EXT_SAMPLE_START;
+  } else {
+    memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_RESERVED,"Sample Directory",-1,memPos,memPos+(maxSample+1)*4));
+    memPos+=(maxSample+1)*4;
+  }
 
   // write samples
   for (int i=0; i<parent->song.sampleLen; i++) {
@@ -1072,6 +1102,7 @@ void DivPlatformSNES::renderSamples(int sysID) {
 
   // finish sample table
   for (int i=0; i<=maxSample; i++) {
+    if (extendedMem) break;
     if (i>=parent->song.sampleLen) break;
     DivSample* s=parent->song.sample[i];
     if (!s->renderOn[0][sysID]) {
@@ -1100,8 +1131,8 @@ void DivPlatformSNES::renderSamples(int sysID) {
   // so the ARAM buffer size becomes 4 bytes when the delay is 0
   memCompo.entries.push_back(DivMemoryEntry(DIV_MEMORY_ECHO,"Echo Buffer",-1,(0xf800-echoDelay*2048),echoDelay==0?0xf804:0xf800));
 
-  memCompo.capacity=65536;
-  memCompo.used=sampleMemLen+echoDelay*2048;
+  memCompo.capacity=sampleMemSize;
+  memCompo.used=getMemUsed();
   memcpy(sampleMem,copyOfSampleMem,sampleMemSize);
 }
 
@@ -1128,6 +1159,22 @@ void DivPlatformSNES::setFlags(const DivConfig& flags) {
 
   interpolationOff=flags.getBool("interpolationOff",false);
   antiClick=flags.getBool("antiClick",true);
+
+  bool newExtendedMem=flags.getBool("extendedMem",false);
+  if (newExtendedMem!=extendedMem) {
+    extendedMem=newExtendedMem;
+    dirEntrySize=extendedMem?8:4;
+    sampleMemSize=extendedMem?SNES_EXT_MEM_SIZE:65536;
+    delete[] sampleMem;
+    delete[] copyOfSampleMem;
+    sampleMem=new signed char[sampleMemSize];
+    copyOfSampleMem=new signed char[sampleMemSize];
+    memset(sampleMem,0,sampleMemSize);
+    memset(copyOfSampleMem,0,sampleMemSize);
+    sampleMemLen=0;
+    // the DSP must use the new buffer
+    reset();
+  }
 
   notifyPitchTable();
 }
@@ -1160,6 +1207,8 @@ void DivPlatformSNES::quit() {
 DivPlatformSNES::DivPlatformSNES() {
   sampleOff=new unsigned int[32768];
   sampleLoaded=new bool[32768];
+  extendedMem=false;
+  dirEntrySize=4;
   sampleMemSize=65536;
   sampleMem=new signed char[sampleMemSize];
   copyOfSampleMem=new signed char[sampleMemSize];

@@ -1,6 +1,7 @@
 // Highly accurate SNES SPC-700 DSP emulator
 
 // snes_spc 0.9.0
+// Modified for Furnace (2026-10-21): optional extended sample memory, see set_extended().
 #ifndef SPC_DSP_H
 #define SPC_DSP_H
 
@@ -29,6 +30,13 @@ public:
 
 	// Furnace addition: disable/enable Gaussian interpolation
 	void setupInterpolation(bool interpolate);
+
+	// Furnace addition: extended sample memory (not hardware-accurate).
+	// if ram_size is above 64K (it must be a power of two), BRR data may be
+	// anywhere in ram_size bytes and directory entries become 8 bytes long
+	// (32-bit start and loop addresses). the echo buffer stays in the first 64K.
+	// otherwise the DSP behaves as on hardware. called by init().
+	void set_extended( int ram_size );
 
 // Emulation
 
@@ -190,6 +198,8 @@ private:
 		
 		// non-emulation state
 		uint8_t* ram;   // 64K shared RAM between DSP and SMP
+		int brr_mask;   // Furnace addition: BRR address mask (0xFFFF on hardware)
+		int dir_stride; // Furnace addition: directory entry size (4 on hardware)
 		int mute_mask;
 		sample_t* out;
 		sample_t* out_end;

@@ -1,4 +1,5 @@
 // snes_spc 0.9.0. http://www.slack.net/~ant/
+// Modified for Furnace (2026-10-21): optional extended sample memory, see set_extended().
 
 #include "SPC_DSP.h"
 
@@ -134,6 +135,21 @@ static short const gauss [512] =
 1282,1283,1284,1286,1287,1288,1290,1291,1292,1293,1294,1295,1296,1297,1297,1298,
 1299,1300,1300,1301,1302,1302,1303,1303,1303,1304,1304,1304,1304,1304,1305,1305,
 };
+
+// Furnace addition: extended (non-hardware) sample memory
+void SPC_DSP::set_extended( int ram_size )
+{
+	if ( ram_size > 0x10000 )
+	{
+		m.brr_mask   = ram_size - 1;
+		m.dir_stride = 8;
+	}
+	else
+	{
+		m.brr_mask   = 0xFFFF;
+		m.dir_stride = 4;
+	}
+}
 
 void SPC_DSP::setupInterpolation(bool interpolate){for(int i=0;i<voice_count;i++){m.voices[i].interpolate=interpolate;}}
 
@@ -303,7 +319,7 @@ inline void SPC_DSP::run_envelope( voice_t* const v )
 inline void SPC_DSP::decode_brr( voice_t* v )
 {
 	// Arrange the four input nybbles in 0xABCD order for easy decoding
-	int nybbles = m.t_brr_byte * 0x100 + m.ram [(v->brr_addr + v->brr_offset + 1) & 0xFFFF];
+	int nybbles = m.t_brr_byte * 0x100 + m.ram [(v->brr_addr + v->brr_offset + 1) & m.brr_mask];
 	
 	int const header = m.t_brr_header;
 	
@@ -402,16 +418,26 @@ MISC_CLOCK( 30 )
 
 inline VOICE_CLOCK( V1 )
 {
-	m.t_dir_addr = (m.t_dir * 0x100 + m.t_srcn * 4) & 0xffff;
+	m.t_dir_addr = (m.t_dir * 0x100 + m.t_srcn * m.dir_stride) & 0xffff;
 	m.t_srcn = VREG(v->regs,srcn);
 }
 inline VOICE_CLOCK( V2 )
 {
 	// Read sample pointer (ignored if not needed)
 	uint8_t const* entry = &m.ram [m.t_dir_addr];
-	if ( !v->kon_delay )
-		entry += 2;
-	m.t_brr_next_addr = GET_LE16A( entry );
+	// Furnace addition: extended sample memory uses 32-bit directory entries
+	if ( m.dir_stride == 8 )
+	{
+		if ( !v->kon_delay )
+			entry += 4;
+		m.t_brr_next_addr = GET_LE32( entry ) & m.brr_mask;
+	}
+	else
+	{
+		if ( !v->kon_delay )
+			entry += 2;
+		m.t_brr_next_addr = GET_LE16A( entry );
+	}
 	
 	m.t_adsr0 = VREG(v->regs,adsr0);
 	
@@ -425,7 +451,7 @@ inline VOICE_CLOCK( V3a )
 inline VOICE_CLOCK( V3b )
 {
 	// Read BRR header and byte
-	m.t_brr_byte   = m.ram [(v->brr_addr + v->brr_offset) & 0xFFFF];
+	m.t_brr_byte   = m.ram [(v->brr_addr + v->brr_offset) & m.brr_mask];
 	m.t_brr_header = m.ram [v->brr_addr]; // brr_addr doesn't need masking
 }
 VOICE_CLOCK( V3c )
@@ -526,7 +552,7 @@ VOICE_CLOCK( V4 )
 		{
 			// Start decoding next BRR block
 			assert( v->brr_offset == brr_block_size );
-			v->brr_addr = (v->brr_addr + brr_block_size) & 0xFFFF;
+			v->brr_addr = (v->brr_addr + brr_block_size) & m.brr_mask;
 			if ( m.t_brr_header & 1 )
 			{
 				v->brr_addr = m.t_brr_next_addr;
@@ -830,6 +856,7 @@ void SPC_DSP::run( int clocks_remain )
 void SPC_DSP::init( void* ram_64k )
 {
 	m.ram = (uint8_t*) ram_64k;
+	set_extended( 0 );
 	mute_voices( 0 );
 	disable_surround( false );
 	set_output( 0, 0 );

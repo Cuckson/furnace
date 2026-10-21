@@ -19,6 +19,7 @@
 
 #include "../engine/dispatch.h"
 #include "../engine/platform/gbaminmod.h"
+#include "../engine/platform/snes.h"
 #include "gui.h"
 #include "misc/cpp/imgui_stdlib.h"
 #include <imgui.h>
@@ -2148,6 +2149,7 @@ bool FurnaceGUI::drawSysConf(int chan, int sysPos, DivSystem type, DivConfig& fl
 
       bool interpolationOff=flags.getBool("interpolationOff",false);
       bool antiClick=flags.getBool("antiClick",true);
+      bool extendedMem=flags.getBool("extendedMem",false);
 
       ImGui::Text(_("Volume scale:"));
       if (CWSliderInt(_("Left##VolScaleL"),&vsL,0,127)) {
@@ -2272,6 +2274,14 @@ bool FurnaceGUI::drawSysConf(int chan, int sysPos, DivSystem type, DivConfig& fl
         altered=true;
       }
 
+      if (ImGui::Checkbox(_("Extended sample memory (not hardware-accurate)"),&extendedMem)) {
+        altered=true;
+        mustRender=true;
+      }
+      if (ImGui::IsItemHovered()) {
+        ImGui::SetTooltip(_("raises sample memory from 64KB to %dMB, so you don't have to trim or resample samples to fit.\nthis is NOT hardware-accurate: real SNES hardware only has 64KB of audio RAM.\nuse it only when rendering to audio files. songs using it can't be exported as real SNES data,\nand unmodified Furnace will cut off any samples past the first 64KB."),SNES_EXT_MEM_SIZE/(1024*1024));
+      }
+
       if (altered) {
         e->lockSave([&]() {
           flags.set("volScaleL",127-vsL);
@@ -2292,6 +2302,12 @@ bool FurnaceGUI::drawSysConf(int chan, int sysPos, DivSystem type, DivConfig& fl
           flags.set("echoMask",echoMask);
           flags.set("interpolationOff",interpolationOff);
           flags.set("antiClick",antiClick);
+          // only stored when enabled, so files that don't use it stay the same
+          if (extendedMem) {
+            flags.set("extendedMem",true);
+          } else {
+            flags.remove("extendedMem");
+          }
         });
       }
 

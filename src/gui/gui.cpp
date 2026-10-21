@@ -6805,6 +6805,10 @@ bool FurnaceGUI::loop() {
                 showError(_("invalid chip index!"));
                 break;
               }
+              if (e->song.system[sampleCompileDispatch]==DIV_SYSTEM_SNES && e->song.systemFlags[sampleCompileDispatch].getBool("extendedMem",false)) {
+                showError(_("this SNES chip uses extended sample memory, which is not valid SNES data and can't be exported."));
+                break;
+              }
               const unsigned char* compiledMem=(const unsigned char*)dis->compileSampleMem(sampleCompileIndex,sampleCompileSize);
               if (compiledMem!=NULL) {
                 FILE* f=ps_fopen(copyOfName.c_str(),"wb");

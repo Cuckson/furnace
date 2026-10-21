@@ -863,7 +863,7 @@ void DivPlatformSNES::initEcho() {
 void DivPlatformSNES::reset() {
   writes.clear();
 
-  memcpy(sampleMem,copyOfSampleMem,65536);
+  memcpy(sampleMem,copyOfSampleMem,sampleMemSize);
   dsp.init(sampleMem);
   dsp.set_output(NULL,0);
   dsp.setupInterpolation(!interpolationOff);
@@ -1010,7 +1010,7 @@ const void* DivPlatformSNES::compileSampleMem(int index, size_t& size) {
 }
 
 void DivPlatformSNES::renderSamples(int sysID) {
-  memset(copyOfSampleMem,0,65536);
+  memset(copyOfSampleMem,0,sampleMemSize);
   memset(sampleOff,0,32768*sizeof(unsigned int));
   memset(sampleLoaded,0,32768*sizeof(bool));
 
@@ -1102,7 +1102,7 @@ void DivPlatformSNES::renderSamples(int sysID) {
 
   memCompo.capacity=65536;
   memCompo.used=sampleMemLen+echoDelay*2048;
-  memcpy(sampleMem,copyOfSampleMem,65536);
+  memcpy(sampleMem,copyOfSampleMem,sampleMemSize);
 }
 
 void DivPlatformSNES::setFlags(const DivConfig& flags) {
@@ -1160,10 +1160,17 @@ void DivPlatformSNES::quit() {
 DivPlatformSNES::DivPlatformSNES() {
   sampleOff=new unsigned int[32768];
   sampleLoaded=new bool[32768];
+  sampleMemSize=65536;
+  sampleMem=new signed char[sampleMemSize];
+  copyOfSampleMem=new signed char[sampleMemSize];
+  memset(sampleMem,0,sampleMemSize);
+  memset(copyOfSampleMem,0,sampleMemSize);
 }
 
 DivPlatformSNES::~DivPlatformSNES() {
   delete[] sampleOff;
   delete[] sampleLoaded;
+  delete[] sampleMem;
+  delete[] copyOfSampleMem;
   samplePitchTable.destroy<Channel>(chan,8);
 }

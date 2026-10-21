@@ -90,8 +90,9 @@ class DivPlatformSNES: public DivDispatch {
   };
   FixedQueue<QueuedWrite,256> writes;
 
-  signed char sampleMem[65536];
-  signed char copyOfSampleMem[65536];
+  signed char* sampleMem;
+  signed char* copyOfSampleMem;
+  size_t sampleMemSize;
   size_t sampleMemLen;
   unsigned int* sampleOff;
   bool* sampleLoaded;

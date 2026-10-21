@@ -81,6 +81,19 @@ class DivPlatformSNES: public DivDispatch {
   bool extendedMem;
   size_t dirEntrySize;
 
+  // in extended mode, looped samples whose loop isn't aligned to 16 samples
+  // get their own BRR copy: padded at the start so the loop start is aligned,
+  // and with the loop repeated until its length is a multiple of 16.
+  struct ExtLoopSample {
+    unsigned char* brr;
+    int lenBRR; // including the extra loop block written by brrEncode()
+    int loopStart; // in the padded copy (multiple of 16)
+    int pad; // silence added before the sample
+    unsigned int hash;
+    ExtLoopSample(): brr(NULL), lenBRR(0), loopStart(0), pad(0), hash(0) {}
+  };
+  std::vector<ExtLoopSample> extLoop;
+
   bool initEchoOn;
   signed char initEchoVolL;
   signed char initEchoVolR;
@@ -157,6 +170,9 @@ class DivPlatformSNES: public DivDispatch {
     void writeEnv(int ch);
     void initEcho();
     size_t getMemUsed();
+    void prepareExtLoop(int sample, DivSample* s);
+    ExtLoopSample* getExtLoop(int sample);
+    void freeExtLoop();
 };
 
 static_assert((SNES_EXT_MEM_SIZE&(SNES_EXT_MEM_SIZE-1))==0 && SNES_EXT_MEM_SIZE>65536,"SNES_EXT_MEM_SIZE must be a power of two larger than 65536");

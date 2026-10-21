@@ -38,6 +38,23 @@ echo "== test600_on"
 render "$NEW" "$OUT/test600_on.wav" "$OUT/test600_on.fur"
 python3 "$HERE/check_mapping.py" --count 600 "$OUT/test600_on.wav" || FAIL=1
 
+echo "== unaligned loop (37-137), flag ON"
+python3 "$HERE/make_test_song.py" --loop-test --ext "$OUT/loop_on.fur" > /dev/null || exit 1
+render "$NEW" "$OUT/loop_on.wav" "$OUT/loop_on.fur"
+python3 "$HERE/check_loop.py" --max-db -35 "$OUT/loop_on.wav" || FAIL=1
+echo "== unaligned loop (37-137), flag OFF (expected to be distorted)"
+python3 "$HERE/make_test_song.py" --loop-test "$OUT/loop_off.fur" > /dev/null || exit 1
+render "$NEW" "$OUT/loop_off.wav" "$OUT/loop_off.fur"
+python3 "$HERE/check_loop.py" "$OUT/loop_off.wav"
+if [ -n "$BASE" ]; then
+  render "$BASE" "$OUT/loop_off_base.wav" "$OUT/loop_off.fur"
+  if cmp -s "$OUT/loop_off.wav" "$OUT/loop_off_base.wav"; then
+    echo "identical to baseline"
+  else
+    echo "DIFFERENT from baseline"; FAIL=1
+  fi
+fi
+
 if [ -n "$BASE" ]; then
   echo "== flag OFF: 320-sample song vs baseline"
   render "$NEW" "$OUT/test320_off_new.wav" "$OUT/test320_off.fur"

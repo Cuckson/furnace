@@ -112,7 +112,8 @@ void FurnaceGUI::drawSampleWarning(DivSample* sample, int index, String &warnLoo
 
   switch (system) {
     case DIV_SYSTEM_SNES:
-      if (sample->loop) {
+      // extended sample memory mode re-encodes unaligned loops (except for BRR samples)
+      if (sample->loop && !(e->song.systemFlags[index].getBool("extendedMem",false) && sample->depth!=DIV_SAMPLE_DEPTH_BRR)) {
         if (sample->loopStart&15) {
           int tryWith=(sample->loopStart+8)&(~15);
           if (tryWith>(int)sample->samples) tryWith-=16;

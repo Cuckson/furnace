@@ -3,6 +3,7 @@
 tests for the SNES `extendedMem` chip flag ("Extended sample memory (not hardware-accurate)").
 
 - `make_test_song.py`: writes a SNES .fur with N distinct samples. sample N is a 1-second sine at 300+20×N Hz. row N of the song plays sample N for 0.25 seconds. samples are reached through instrument sample maps, because a song can have at most 256 instruments.
+- `check_loop.py`: measures how clean the looped sine from `make_test_song.py --loop-test` is (its loop start and length aren't multiples of 16).
 - `check_mapping.py`: finds the strongest frequency in each row of a render and checks it matches that row's sample.
 - `render_demos.sh`: renders every song in `demos/snes` and writes SHA-256 hashes, so two builds can be compared.
 - `run_tests.sh`: runs all of the above.

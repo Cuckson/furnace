@@ -58,23 +58,23 @@ class Block:
         return self.magic + struct.pack("<I", len(self.data)) + bytes(self.data)
 
 
-def make_sample(n):
+def make_sample(n, length=SAMPLE_LEN, freq=None, loop=None):
+    f = freq_of(n) if freq is None else freq
     b = Block(b"SMP2")
-    b.str("sine %d (%.0fHz)" % (n, freq_of(n)))
-    b.i(SAMPLE_LEN)
+    b.str("sine %d (%.0fHz)" % (n, f))
+    b.i(length)
     b.i(RATE)  # compat rate
     b.i(RATE)  # C-4 rate
     b.c(16)  # 16-bit PCM
     b.c(0)  # loop direction
     b.c(0)  # flags
     b.c(0)  # flags 2
-    b.i(-1)  # loop start
-    b.i(-1)  # loop end
+    b.i(-1 if loop is None else loop[0])  # loop start
+    b.i(-1 if loop is None else loop[1])  # loop end
     for _ in range(4):
         b.i(0xffffffff)
-    f = freq_of(n)
     pcm = bytearray()
-    for k in range(SAMPLE_LEN):
+    for k in range(length):
         pcm += struct.pack("<h", int(round(16000.0 * math.sin(2.0 * math.pi * f * k / RATE))))
     b.raw(bytes(pcm))
     return b.bytes()
@@ -165,17 +165,21 @@ def main():
     ap.add_argument("--count", type=int, default=320)
     ap.add_argument("--ext", action="store_true", help="enable extended sample memory flag")
     ap.add_argument("--echo", action="store_true", help="enable echo on channel 1 at maximum delay")
+    ap.add_argument("--loop-test", action="store_true",
+                    help="instead: one looped 320Hz sine whose loop (37-137) isn't aligned to 16, held for 2 seconds")
     args = ap.parse_args()
-    count = args.count
+    count = 1 if args.loop_test else args.count
+    hold = 8 if args.loop_test else 1
 
     ins_count = (count + NOTES_PER_INS - 1) // NOTES_PER_INS
     # one row per sample, plus one final row that holds the stop effect
-    total_rows = count + 1
+    total_rows = count * hold + 1
     order_len = (total_rows + PAT_LEN - 1) // PAT_LEN
 
     rows = []
     for n in range(count):
         rows.append((n % NOTES_PER_INS, n // NOTES_PER_INS, False))
+        rows += [None] * (hold - 1)
     # final row: retrigger nothing, just stop
     rows.append(None)
     while len(rows) < order_len * PAT_LEN:
@@ -193,13 +197,17 @@ def main():
         base = k * NOTES_PER_INS
         blocks.append((4, make_instrument(k, base, min(NOTES_PER_INS, count - base))))
     for n in range(count):
-        blocks.append((6, make_sample(n)))
+        if args.loop_test:
+            blocks.append((6, make_sample(n, length=137, freq=320.0, loop=(37, 137))))
+        else:
+            blocks.append((6, make_sample(n)))
     for p in range(order_len):
         pr = rows[p * PAT_LEN:(p + 1) * PAT_LEN]
         # place the stop effect on the row after the last note
-        if p * PAT_LEN <= count < (p + 1) * PAT_LEN:
+        stop_row = count * hold
+        if p * PAT_LEN <= stop_row < (p + 1) * PAT_LEN:
             pr = list(pr)
-            pr[count - p * PAT_LEN] = "STOP"
+            pr[stop_row - p * PAT_LEN] = "STOP"
         out_rows = []
         for r in pr:
             if r == "STOP":

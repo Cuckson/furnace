@@ -19,6 +19,7 @@
 
 #include "snes.h"
 #include "../engine.h"
+#include "../brrUtils.h"
 #include "../../ta-log.h"
 #include "furIcons.h"
 #include <math.h>
@@ -224,6 +225,16 @@ void DivPlatformSNES::tick(bool sysTick) {
         if (chan[i].useWave) {
           start=waveTableAddr(i);
           loop=start;
+        } else if (chan[i].sample>=0 && chan[i].sample<parent->song.sampleLen && getExtLoop(chan[i].sample)!=NULL) {
+          // extended mode, re-encoded loop
+          ExtLoopSample* el=getExtLoop(chan[i].sample);
+          unsigned int base=sampleOff[chan[i].sample];
+          start=base;
+          end=MIN(start+MAX(el->lenBRR,1),getSampleMemCapacity());
+          if (chan[i].audPos>0) {
+            start=start+MIN((chan[i].audPos+el->pad)/16*9,end-start);
+          }
+          loop=9+base+((el->loopStart/16)*9);
         } else if (chan[i].sample>=0 && chan[i].sample<parent->song.sampleLen) {
           start=sampleOff[chan[i].sample];
           end=MIN(start+MAX(s->lengthBRR+((s->loop && s->depth!=DIV_SAMPLE_DEPTH_BRR)?9:0),1),getSampleMemCapacity());
@@ -814,6 +825,16 @@ DivSamplePos DivPlatformSNES::getSamplePos(int ch) {
   const SPC_DSP::voice_t* v=dsp.get_voice(ch);
   // TODO: fix?
   if (sampleMem[v->brr_addr&(sampleMemSize-1)]==0) return DivSamplePos();
+  ExtLoopSample* el=getExtLoop(chan[ch].sample);
+  if (el!=NULL) {
+    // map the position in the padded/unrolled copy back to the original sample
+    DivSample* s=parent->getSample(chan[ch].sample);
+    int pos=((v->brr_addr-sampleOff[chan[ch].sample])*16/9)+v->brr_offset-el->pad;
+    int loopLen=s->loopEnd-s->loopStart;
+    if (pos<0) pos=0;
+    if (pos>=s->loopEnd && loopLen>0) pos=s->loopStart+((pos-s->loopStart)%loopLen);
+    return DivSamplePos(chan[ch].sample,pos,(chan[ch].freq*125)/16);
+  }
   return DivSamplePos(
     chan[ch].sample,
     ((v->brr_addr-sampleOff[chan[ch].sample])*16/9)+v->brr_offset,
@@ -866,6 +887,80 @@ void DivPlatformSNES::initEcho() {
     }
   }
   memCompo.used=getMemUsed();
+}
+
+static int gcd(int a, int b) {
+  while (b!=0) {
+    int t=a%b;
+    a=b;
+    b=t;
+  }
+  return a;
+}
+
+void DivPlatformSNES::prepareExtLoop(int sample, DivSample* s) {
+  ExtLoopSample& el=extLoop[sample];
+  int loopEnd=MIN(s->loopEnd,(int)s->samples);
+  bool need=(
+    s->isLoopable() &&
+    s->depth!=DIV_SAMPLE_DEPTH_BRR &&
+    s->data16!=NULL &&
+    s->loopStart>=0 && loopEnd>s->loopStart &&
+    ((s->loopStart&15) || ((loopEnd-s->loopStart)&15))
+  );
+  if (!need) {
+    delete[] el.brr;
+    el=ExtLoopSample();
+    return;
+  }
+
+  // don't re-encode if nothing changed
+  unsigned int hash=2166136261u;
+  int params[5]={(int)s->samples,s->loopStart,loopEnd,s->brrEmphasis,s->brrNoFilter};
+  for (int i=0; i<5; i++) {
+    hash=(hash^(unsigned int)params[i])*16777619u;
+  }
+  for (int i=0; i<loopEnd; i++) {
+    hash=(hash^(unsigned short)s->data16[i])*16777619u;
+  }
+  if (el.brr!=NULL && el.hash==hash) return;
+  delete[] el.brr;
+
+  int loopStart=s->loopStart;
+  int loopLen=loopEnd-loopStart;
+  int pad=(16-(loopStart&15))&15;
+  int repeats=16/gcd(loopLen,16);
+  int len=pad+loopStart+loopLen*repeats;
+
+  short* buf=new short[len];
+  memset(buf,0,pad*sizeof(short));
+  memcpy(&buf[pad],s->data16,loopStart*sizeof(short));
+  for (int i=0; i<repeats; i++) {
+    memcpy(&buf[pad+loopStart+i*loopLen],&s->data16[loopStart],loopLen*sizeof(short));
+  }
+
+  el.brr=new unsigned char[(len/16+1)*9];
+  memset(el.brr,0,(len/16+1)*9);
+  el.lenBRR=brrEncode(buf,el.brr,len,pad+loopStart,s->brrEmphasis,s->brrNoFilter);
+  el.loopStart=pad+loopStart;
+  el.pad=pad;
+  el.hash=hash;
+  delete[] buf;
+}
+
+DivPlatformSNES::ExtLoopSample* DivPlatformSNES::getExtLoop(int sample) {
+  if (!extendedMem) return NULL;
+  if (sample<0 || sample>=(int)extLoop.size()) return NULL;
+  if (!sampleLoaded[sample]) return NULL;
+  if (extLoop[sample].brr==NULL) return NULL;
+  return &extLoop[sample];
+}
+
+void DivPlatformSNES::freeExtLoop() {
+  for (ExtLoopSample& i: extLoop) {
+    delete[] i.brr;
+  }
+  extLoop.clear();
 }
 
 size_t DivPlatformSNES::getMemUsed() {
@@ -1037,6 +1132,12 @@ void DivPlatformSNES::renderSamples(int sysID) {
   memset(sampleOff,0,32768*sizeof(unsigned int));
   memset(sampleLoaded,0,32768*sizeof(bool));
 
+  if (extendedMem) {
+    if ((int)extLoop.size()<parent->song.sampleLen) extLoop.resize(parent->song.sampleLen);
+  } else {
+    freeExtLoop();
+  }
+
   memCompo=DivMemoryComposition();
   memCompo.name="SPC/DSP Memory";
 
@@ -1076,10 +1177,19 @@ void DivPlatformSNES::renderSamples(int sysID) {
     }
 
     int length=s->lengthBRR+((s->loop && s->depth!=DIV_SAMPLE_DEPTH_BRR)?9:0);
+    const unsigned char* brrData=s->dataBRR;
+    if (extendedMem) {
+      prepareExtLoop(i,s);
+      ExtLoopSample* el=&extLoop[i];
+      if (el->brr!=NULL) {
+        length=el->lenBRR;
+        brrData=el->brr;
+      }
+    }
     int actualLength=MIN((int)(getSampleMemCapacity()-memPos)/9*9,length);
     if (actualLength>0) {
       sampleOff[i]=memPos;
-      memcpy(&copyOfSampleMem[memPos],s->dataBRR,actualLength);
+      memcpy(&copyOfSampleMem[memPos],brrData,actualLength);
       // inject loop if needed
       if (s->loop) {
         copyOfSampleMem[memPos+actualLength-9]|=3;
@@ -1221,5 +1331,6 @@ DivPlatformSNES::~DivPlatformSNES() {
   delete[] sampleLoaded;
   delete[] sampleMem;
   delete[] copyOfSampleMem;
+  freeExtLoop();
   samplePitchTable.destroy<Channel>(chan,8);
 }
